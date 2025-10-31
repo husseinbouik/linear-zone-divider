@@ -1,42 +1,32 @@
-import fs from 'fs';
-import path from 'path';
-
 type Nullable<T> = T | undefined;
 
-import 'dotenv/config';
+export interface LoggerConfig {
+  enabled?: boolean;
+  filename?: string;
+}
 
 export class Logger {
-  private logFilePath: string = '';
   private startTime: number = 0;
   private isEnabled: boolean;
+  private logs: string[] = [];
+  private filename: string;
 
-  constructor(filename = 'calculator-debug.log') {
-    this.isEnabled = process.env.ENABLE_LOGGING === 'true';
-    
+  constructor(config: LoggerConfig = {}) {
+    this.isEnabled = config.enabled ?? false;
+    this.filename = config.filename ?? 'calculator-debug.log';
+    this.startTime = Date.now();
+
     if (!this.isEnabled) return;
 
-    // Create logs directory if it doesn't exist
-    try {
-      const logsDir = path.join(process.cwd(), 'logs');
-      if (!fs.existsSync(logsDir)) {
-        fs.mkdirSync(logsDir);
-      }
-
-      this.logFilePath = path.join(logsDir, filename);
-      this.startTime = Date.now();
-
-      fs.writeFileSync(this.logFilePath, `=== Log started at ${new Date().toISOString()} ===\n\n`);
-    } catch (err) {
-      console.error(`Failed to initialize logger: ${err}`);
-    }
+    this.log(`=== Log started at ${new Date().toISOString()} ===\n\n`);
   }
 
   log(message: string, data?: Nullable<any>): void {
     if (!this.isEnabled) return;
-    
+
     const timestamp = Date.now() - this.startTime;
-    let logMessage = `${message}`;
-    
+    let logMessage = `[${timestamp}ms] ${message}`;
+
     if (data !== undefined) {
       if (typeof data === 'object') {
         logMessage += `\n${JSON.stringify(data, null, 2)}`;
@@ -44,10 +34,30 @@ export class Logger {
         logMessage += ` ${data}`;
       }
     }
-    
-    fs.appendFileSync(this.logFilePath, logMessage + '\n');
+
+    this.logs.push(logMessage);
+
+    // In Node.js, you can optionally write to fs
+    if (typeof window === 'undefined') {
+      // Node.js environment
+      import('fs').then(fs => {
+        import('path').then(path => {
+          const logsDir = path.join(process.cwd(), 'logs');
+          if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir);
+          const logFilePath = path.join(logsDir, this.filename);
+          fs.appendFileSync(logFilePath, logMessage + '\n');
+        });
+      });
+    } else {
+      // Browser fallback: console.log
+      console.log(logMessage);
+    }
+  }
+
+  getLogs(): string[] {
+    return this.logs;
   }
 }
 
-// Create singleton instance
-export const logger = new Logger();
+// Singleton
+export const logger = new Logger({ enabled: true });
