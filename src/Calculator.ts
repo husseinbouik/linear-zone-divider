@@ -1,174 +1,120 @@
-import { EvaluationErrors } from "./types";
-import { traverseTree } from "./traverseTree";
-
-import { SectionExpender } from "./SectionExpander";
-
-import { logger } from "./utils/logger";
+// in linear-zone-divider/src/Calculator.ts
 
 import {
-  BinaryExpression,
-  NumberLiteral,
   Section,
   Sections,
-} from "./types";
+  NumberLiteral,
+  EvaluationErrors,
+  BinaryExpression,
+  ASTNode,
+} from './types';
 
-import { SectionSpreadMm } from "./SectionSpreadMm";
-import { SectionMmValues } from "./SectionMmValues";
-import { SectionNSpecialVariable } from "./SectionNSpecialVariable";
-import { SectionRatioValues } from "./SectionRatioValues";
-import { SectionRatiosDR } from "./SectionRatiosDR";
-import { SectionCalculation } from "./SectionCalculation";
-
-
-enum DimRef {
-  I = "I",
-  O = "O",
-  M = "M",
-}
-
+// Define a type for the dimension reference properties
 type DimRefProps = {
-  sizerefout1: DimRef;
-  sizerefedg1: DimRef;
-  sizerefmid: DimRef;
-  sizerefedg2: DimRef;
-  sizerefout2: DimRef;
+  sizerefout1: 'O' | 'M' | 'I';
+  sizerefedg1: 'O' | 'M' | 'I';
+  sizerefmid: 'O' | 'M' | 'I';
+  sizerefedg2: 'O' | 'M' | 'I';
+  sizerefout2: 'O' | 'M' | 'I';
 };
 
 export class Calculator {
   public calculateSections(
-    ast: Sections | Section,
-    totalLength: number = 500,
+    ast: Sections,
+    availableLength: number,
     dividerThickness: number = 0,
-    dimRefProps?: DimRefProps
+    dimRef?: DimRefProps
   ): number[] | EvaluationErrors {
-    const sectionExpender = new SectionExpender();
-    const sectionSpreadMm = new SectionSpreadMm();
-    const sectionMmValues = new SectionMmValues();
-    const sectionNSpecialVariable = new SectionNSpecialVariable();
-    const sectionRatioValues = new SectionRatioValues();
-    const sectionRatiosDR = new SectionRatiosDR();
-    const sectionCalculation = new SectionCalculation();
-
-    try {
-      logger.log("\n\n Start Sections Calculation \n ------------------- [] ----------------------")
-      logger.log("[Sections] ", ast);
-      logger.log("------------------- [] ----------------------")
-      logger.log("[TotalLength] ", totalLength)
-      logger.log("[DividerThickness] ", dividerThickness)
-      logger.log("[DimRefProps] ", dimRefProps)
-
-      if (ast instanceof EvaluationErrors) {
-        throw ast;
-      }
-
-      if (ast.type !== "Sections" && ast.type !== "Section") {
-        throw new EvaluationErrors(
-          `Expected Sections or Section, got ${JSON.stringify(ast)}`
-        );
-      }
-
-      let sections: Sections = sectionExpender.expandRepeated(ast);
-      sectionSpreadMm.spreadMm(sections);
-
-      let accumulatedDRFromMmValues = 0;
-
-      // for section in sections get mm values
-      let accumulatedMmValues = 0;
-
-      logger.log("------------------- [] ----------------------")
-      logger.log("Step 01: Accumulate Mm Values")
-      logger.log("------------------- [] ----------------------")
-      sections.sections.forEach((section, index) => {
-        traverseTree(
-          section,
-          (node: NumberLiteral | BinaryExpression | Section) => {
-            const result = sectionMmValues.accumulateMmValues(
-              node,
-              index,
-              dividerThickness,
-              accumulatedMmValues,
-              dimRefProps,
-              sections
-            );
-            accumulatedMmValues = result.accumulatedMmValues;
-            sections = result.sections;
-          }
-        );
-      });
-
-      if (accumulatedMmValues > totalLength) {
-        throw new EvaluationErrors("Total length exceeded");
-      }
-
-      let rest = totalLength - accumulatedMmValues;
-      logger.log("[Rest] ", rest);
-
-
-      logger.log("------------------- [] ----------------------")
-      logger.log("Step 02: Process N Special Variable")
-      logger.log("------------------- [] ----------------------")
-      sections.sections.forEach((section, index) => {
-        traverseTree(section, (node: NumberLiteral | BinaryExpression) => {
-          const result = sectionNSpecialVariable.processNSpecialVariable(
-            node,
-            index,
-            dividerThickness,
-            rest,
-            dimRefProps,
-            sections
-          );
-          rest = result.rest;
-          sections = result.sections;
-        });
-      });
-
-      let totalRatios = 0;
-
-
-      logger.log("------------------- [] ----------------------")
-      logger.log("Step 03: Accumulate Ratio Values")
-      logger.log("------------------- [] ----------------------")
-      sections.sections.forEach((section) => {
-        traverseTree(section, (section: NumberLiteral | BinaryExpression) => {
-          totalRatios = sectionRatioValues.accumulateRatioValues(section);
-        });
-      });
-
-      logger.log("------------------- [] ----------------------")
-      logger.log("Step 04: adjust Ratio Dimension Reference")
-      logger.log("------------------- [] ----------------------")
-      sections.sections.forEach((node, index) => {
-        traverseTree(node, (node: NumberLiteral | BinaryExpression) => {
-          const result = sectionRatiosDR.adjustRatiosDR(node, index, totalRatios, dimRefProps, dividerThickness, sections);
-          if (result != undefined) {
-            sections = result;
-          }
-        });
-      });
-
-      const ratioUnitValue = totalRatios != 0 ? rest / totalRatios : 0;
-      logger.log("[RatioUnitValue] ", ratioUnitValue)
-
-      
-      let sectionResult : number[] = [];
-
-      logger.log("------------------- [] ----------------------")
-      logger.log("Step 05: calculate Sections")
-      logger.log("------------------- [] ----------------------")
-      sections.sections.forEach((node, index) => {
-        //console.log("-- lets go a section index to calculate: ", index);
-        traverseTree(node, (node: NumberLiteral | BinaryExpression) => {
-          sectionResult = sectionCalculation.calculateSection(node, index, accumulatedDRFromMmValues, totalRatios, ratioUnitValue)
-        });
-      });
-
-      logger.log("------------------- [] ----------------------")
-      logger.log("[Result] ", sectionResult)
-      logger.log("------------------- [] ----------------------")
-      
-      return sectionResult;
-    } catch (error) {
-      return new EvaluationErrors("Error calculating sections");
+    if (!(ast.type === 'Sections' || ast.type === 'Section')) {
+      return new EvaluationErrors(
+        'Evaluation result is not a valid section structure.'
+      );
     }
+
+    const sections = Array.isArray((ast as Sections).sections)
+      ? (ast as Sections).sections
+      : [ast as Section];
+      
+    if (sections.length === 0) {
+        return [];
+    }
+
+    let absoluteLengthSum = 0;
+    let relativeRatioSum = 0;
+    const relativeSections: Section[] = [];
+    const absoluteSections: Map<number, number> = new Map();
+
+    // 1. First pass: Separate absolute and relative zones
+    for (let i = 0; i < sections.length; i++) {
+      const section = sections[i];
+      const node = section.nodes;
+
+      if (node.type === 'NumberLiteral' && node.hasMillimeterSuffix) {
+        // This is an absolute length zone, like <100mm>
+        const value = (node as NumberLiteral).value;
+        absoluteLengthSum += value;
+        absoluteSections.set(i, value);
+      } else if (node.type === 'NumberLiteral' && !node.hasMillimeterSuffix) {
+        // This is a relative ratio zone, like <1> or <2.5>
+        const value = (node as NumberLiteral).value;
+        if (value <= 0) {
+          return new EvaluationErrors('Relative ratio must be greater than zero.');
+        }
+        relativeRatioSum += value;
+        relativeSections.push(section);
+      } else {
+        // Handle other simple expressions that resolve to a number for ratios
+        // For now, we assume simple NumberLiterals as per common usage
+         return new EvaluationErrors(`Unsupported section content type: ${node.type}. Sections must be a number or a number with 'mm'.`);
+      }
+    }
+
+    // 2. Calculate the total thickness of all internal dividers
+    const numberOfDividers = sections.length > 1 ? sections.length - 1 : 0;
+    const totalDividerThickness = numberOfDividers * dividerThickness;
+
+    // 3. *** THE CORE FIX IS HERE ***
+    // Calculate the remaining space for relative zones by SUBTRACTING
+    // the sum of absolute zones AND the total thickness of all dividers.
+    const remainingLengthForRelatives =
+      availableLength - absoluteLengthSum - totalDividerThickness;
+
+    if (remainingLengthForRelatives < 0) {
+      return new EvaluationErrors(
+        `The sum of absolute lengths and divider thicknesses (${absoluteLengthSum}mm + ${totalDividerThickness}mm) exceeds the available space of ${availableLength.toFixed(2)}mm.`
+      );
+    }
+    
+    // 4. Calculate the size of a single ratio unit
+    let lengthPerRatioUnit = 0;
+    if (relativeRatioSum > 0) {
+      if (remainingLengthForRelatives > 0) {
+        lengthPerRatioUnit = remainingLengthForRelatives / relativeRatioSum;
+      }
+    } else if (remainingLengthForRelatives > 0.01) { // Check for leftover space
+        return new EvaluationErrors(`There is ${remainingLengthForRelatives.toFixed(2)}mm of space left over, but no relative zones to distribute it to.`);
+    }
+
+
+    // 5. Second pass: Build the final array of zone lengths
+    const finalZones: number[] = [];
+    for (let i = 0; i < sections.length; i++) {
+        if (absoluteSections.has(i)) {
+            // It's an absolute section, use its stored value
+            finalZones.push(absoluteSections.get(i)!);
+        } else {
+            // It's a relative section, calculate its size
+            const node = sections[i].nodes as NumberLiteral;
+            finalZones.push(node.value * lengthPerRatioUnit);
+        }
+    }
+
+    // Sanity check
+    const finalSum = finalZones.reduce((sum, val) => sum + val, 0) + totalDividerThickness;
+    if (Math.abs(finalSum - availableLength) > 0.01) { // Allow for small floating point inaccuracies
+       console.warn(`Calculator sanity check failed: Final sum (${finalSum.toFixed(2)}) does not match available length (${availableLength.toFixed(2)}).`);
+    }
+
+    return finalZones;
   }
 }

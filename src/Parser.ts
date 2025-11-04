@@ -1,6 +1,7 @@
 import { Token } from './types';
 import { TokenType } from './types';
 import {
+  Expression, // Import the Expression type explicitly
   NumberLiteral,
   Variable,
   SpecialVariable,
@@ -11,25 +12,10 @@ import {
   Section,
   Sections,
   Repeated,
-  Reduction,
-  LinearDivision,
+  Node, // Import the correct, complete Node type
 } from './types';
 
-type Node =
-  | NumberLiteral
-  | Variable
-  | UnaryExpression
-  | FunctionCall
-  | Grouping
-  | BinaryExpression
-  | Section
-  | Sections
-  | Repeated
-  | Reduction
-  | SpecialVariable
-  | LinearDivision;
-
-//TODO: add handling of [] brackets tokens (CURRENTLY DOESN'T EXIST IN DB)
+// REMOVED: The local 'Node' type alias is redundant and less complete than the imported one.
 
 export class Parser {
   private cache = new Map<Token[], Node>();
@@ -41,23 +27,17 @@ export class Parser {
       const ast = this.cache.get(tokens)!;
       this.cache.delete(tokens);
       this.cache.set(tokens, ast);
-
       return ast;
     }
-
     try {
       this.tokens = tokens;
       const ast = this.performParse(tokens);
       this.cache.set(tokens, ast);
-
       if (this.cache.size > 3) {
         const oldestKey = this.cache.keys().next().value;
         this.cache.delete(oldestKey!);
       }
-
-
       return ast;
-
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
@@ -69,7 +49,8 @@ export class Parser {
       throw new Error('No tokens to parse.');
     }
     try {
-      return this.expression();
+      // CHANGE: Call the new top-level parsing method instead of expression() directly.
+      return this.parseStructureOrExpression();
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : String(err));
     }
@@ -92,17 +73,27 @@ export class Parser {
     }
     return false;
   }
-
-  private sections(): Sections | Section | Node {
-    const sections: Section[] = [];
-
-    if (!this.check(TokenType.ANGLE_BRACKET_OPEN)) {
-      return this.expression();
+  
+  // NEW: Top-level parser to handle structural nodes vs expressions.
+  private parseStructureOrExpression(): Node {
+    if (this.check(TokenType.ANGLE_BRACKET_OPEN)) {
+      return this.sections();
     }
+    if (this.check(TokenType.BRACE_OPEN)) {
+      return this.repeated();
+    }
+    // If it's not a structure, it must be a mathematical expression.
+    return this.expression();
+  }
 
-    while (this.check(TokenType.ANGLE_BRACKET_OPEN)) {
+  // REFACTORED: This method now ONLY parses section blocks.
+  private sections(): Sections | Section {
+    const sections: Section[] = [];
+    
+    // It's guaranteed to start with '<' because of how it's called.
+    while (!this.isAtEnd() && this.check(TokenType.ANGLE_BRACKET_OPEN)) {
       this.advance(); // Consume '<'
-      let expr = this.expression();
+      let expr = this.expression(); // A section contains an expression.
       this.consume(
         TokenType.ANGLE_BRACKET_CLOSE,
         "Expected '>' after section expression."
@@ -115,15 +106,13 @@ export class Parser {
       });
     }
 
+    if (sections.length === 0) {
+        // This should not happen if called correctly, but as a safeguard:
+        throw new Error("Expected one or more sections starting with '<'.");
+    }
+
     if (sections.length === 1) {
-      const singleSection = sections[0];
-      if (
-        singleSection.type === 'Section' &&
-        singleSection.nodes.type === 'Section'
-      ) {
-        return singleSection.nodes as Section;
-      }
-      return singleSection;
+      return sections[0];
     }
 
     return {
@@ -132,9 +121,27 @@ export class Parser {
     };
   }
 
-  private expression(): Node {
+  // NEW: Dedicated method for parsing a Repeated block.
+  private repeated(): Repeated {
+    this.advance(); // Consume '{'
+    // A repeated block can contain another structure or a simple expression.
+    let content = this.parseStructureOrExpression();
+    this.consume(TokenType.BRACE_CLOSE, "Expected '}' after repeated content.");
+    
+    return {
+      type: 'Repeated',
+      toRepeat: content,
+      hasMillimeterSuffix: this.consumeMillimeterSuffix(),
+    };
+  }
+
+
+  // --- EXPRESSION PARSING METHODS ---
+  // The following methods are now correctly typed to only return `Expression`.
+
+  private expression(): Expression { // CHANGE: Return type is now Expression
     try {
-      let expr = this.term();
+      let expr: Expression = this.term(); // Ensure expr is typed as Expression
 
       while (
         !this.isAtEnd() &&
@@ -143,12 +150,12 @@ export class Parser {
       ) {
         this.advance();
         const operator = this.previous().lexeme;
-        const right = this.term();
+        const right: Expression = this.term(); // right is an Expression
         expr = {
           type: 'BinaryExpression',
-          left: expr,
+          left: expr, // This is now guaranteed to be an Expression
           operator,
-          right,
+          right, // This is also guaranteed to be an Expression
         };
       }
 
@@ -160,9 +167,9 @@ export class Parser {
     }
   }
 
-  private term(): Node {
+  private term(): Expression { // CHANGE: Return type is now Expression
     try {
-      let expr = this.factor();
+      let expr: Expression = this.factor(); // Ensure expr is typed as Expression
 
       while (
         !this.isAtEnd() &&
@@ -171,7 +178,7 @@ export class Parser {
       ) {
         this.advance();
         const operator = this.previous().lexeme;
-        const right = this.factor();
+        const right: Expression = this.factor(); // right is an Expression
 
         if (right.type === 'SpecialVariable' && right.name === 'n') {
           throw new Error(
@@ -181,9 +188,9 @@ export class Parser {
 
         expr = {
           type: 'BinaryExpression',
-          left: expr,
+          left: expr, // Guaranteed to be an Expression
           operator,
-          right,
+          right,      // Guaranteed to be an Expression
         };
       }
 
@@ -193,7 +200,7 @@ export class Parser {
     }
   }
 
-  private factor(): Node {
+  private factor(): Expression { // CHANGE: Return type is now Expression
     try {
       if (
         this.check(TokenType.OPERATOR) &&
@@ -201,11 +208,11 @@ export class Parser {
       ) {
         this.advance(); // Consume the operator
         const operator = this.previous().lexeme;
-        const right = this.factor();
+        const right: Expression = this.factor(); // right is an Expression
         return {
           type: 'UnaryExpression',
           operator,
-          right,
+          right, // Guaranteed to be an Expression
         };
       }
 
@@ -215,7 +222,7 @@ export class Parser {
     }
   }
 
-  private primary(): Node {
+  private primary(): Expression { // CHANGE: Return type is now Expression
     try {
       if (this.check(TokenType.NUMBER)) {
         this.advance();
@@ -251,7 +258,7 @@ export class Parser {
           TokenType.PAREN_OPEN,
           `Expected '(' after function name '${functionName}'.`
         );
-        const arg = this.expression();
+        const arg: Expression = this.expression(); // arg is an Expression
         this.consume(
           TokenType.PAREN_CLOSE,
           `Expected ')' after function arguments.`
@@ -259,47 +266,32 @@ export class Parser {
         return {
           type: 'FunctionCall',
           name: functionName,
-          arg: arg,
+          arg, // Guaranteed to be an Expression
           hasMillimeterSuffix: this.consumeMillimeterSuffix(),
         };
       }
 
       if (this.check(TokenType.PAREN_OPEN)) {
         this.advance();
-        const expr = this.expression();
+        const expr: Expression = this.expression(); // expr is an Expression
         if (!expr) {
           throw new Error('Expected expression inside parentheses.');
         }
         this.consume(TokenType.PAREN_CLOSE, "Expected ')' after expression.");
         return {
           type: 'Grouping',
-          expression: expr,
+          expression: expr, // Guaranteed to be an Expression
           hasMillimeterSuffix: this.consumeMillimeterSuffix(),
         };
       }
+
+      // REMOVED: The logic for BRACE_OPEN and ANGLE_BRACKET_OPEN has been
+      // moved to the new top-level parse method where it belongs.
 
       if (this.check(TokenType.PAREN_CLOSE)) {
         throw new Error(`Unexpected ')' without a matching '('.`);
       }
-
-      if (this.check(TokenType.BRACE_OPEN)) {
-        this.advance();
-        let content = this.sections();
-        this.consume(TokenType.BRACE_CLOSE, "Expected '}' after expression.");
-
-        if (content.type === 'Section' && content.nodes.type === 'Section') {
-          content = content.nodes as Node;
-        }
-        return {
-          type: 'Repeated',
-          toRepeat: content,
-          hasMillimeterSuffix: this.consumeMillimeterSuffix(),
-        };
-      }
-
-      if (this.check(TokenType.ANGLE_BRACKET_OPEN)) {
-        return this.sections();
-      }
+      
       throw new Error(`Unexpected token: ${this.peek().lexeme}`);
     } catch (err) {
       throw new Error(`Failed to parse primary: ${(err as Error).message}`);
