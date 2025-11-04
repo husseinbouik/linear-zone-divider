@@ -21,6 +21,7 @@ export type DimRefProps = {
   sizerefout2: DimRef;
 };
 
+
 export type SideConfig = {
   thickness?: number;
   dimRef?: DimRef;
@@ -132,9 +133,8 @@ export const processLindivEnhanced = (
     const evaluator = new Evaluator();
 
     const direction = config.direction || 'v';
-    // For 'P' type, the component logic correctly re-maps it to W or D before calling,
-    // but we can keep this for robustness.
     const divisionType = config.divisionType || 'W'; 
+    const { dividerDimRef, sideThickness } = config;
 
     const tokens: Token[] = scanner.scan(config.input);
     const ast = parser.parse(tokens);
@@ -144,10 +144,45 @@ export const processLindivEnhanced = (
       return evaluationResult;
     }
 
-    // 1. Calculate the TRUE net length available for the internal zones.
+    // --- NEW LOGIC BLOCK STARTS HERE ---
+    // Create a deep copy of sideThickness to avoid mutating the original config object.
+    const augmentedSideThickness = JSON.parse(JSON.stringify(sideThickness || {}));
+
+    // If dividerDimRef is provided, use it to override the dimRef of the corresponding side panels.
+    if (dividerDimRef) {
+        let startSideKey: keyof SideThicknessConfig | undefined;
+        let endSideKey: keyof SideThicknessConfig | undefined;
+
+        if (direction === 'h') {
+            startSideKey = 'top';
+            endSideKey = 'bottom';
+        } else { // Vertical division
+            if (divisionType === 'D') {
+                startSideKey = 'front';
+                endSideKey = 'back';
+            } else { // Default to Width division ('W', 'P')
+                startSideKey = 'left';
+                endSideKey = 'right';
+            }
+        }
+
+        // Apply sizerefout1 to the start side's dimRef if it exists
+        if (startSideKey && augmentedSideThickness[startSideKey] && dividerDimRef.sizerefout1) {
+            augmentedSideThickness[startSideKey].dimRef = dividerDimRef.sizerefout1;
+        }
+
+        // Apply sizerefout2 to the end side's dimRef if it exists
+        if (endSideKey && augmentedSideThickness[endSideKey] && dividerDimRef.sizerefout2) {
+            augmentedSideThickness[endSideKey].dimRef = dividerDimRef.sizerefout2;
+        }
+    }
+    // --- NEW LOGIC BLOCK ENDS HERE ---
+
+
+    // 1. Calculate the TRUE net length using the potentially modified sideThickness.
     const netLength = calculateNetLength(
       config.totalLength,
-      config.sideThickness,
+      augmentedSideThickness, // Use the augmented object
       direction,
       divisionType
     );
@@ -165,7 +200,7 @@ export const processLindivEnhanced = (
       throw new Error(internalSections.message);
     }
     
-    // 3. Return the result directly. No further adjustments are needed.
+    // 3. Return the result directly.
     return internalSections;
 
   } catch (err) {

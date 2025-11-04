@@ -5,116 +5,116 @@ import {
   Sections,
   NumberLiteral,
   EvaluationErrors,
-  BinaryExpression,
-  ASTNode,
 } from './types';
 
-// Define a type for the dimension reference properties
+type DimRef = 'O' | 'M' | 'I';
+
 type DimRefProps = {
-  sizerefout1: 'O' | 'M' | 'I';
-  sizerefedg1: 'O' | 'M' | 'I';
-  sizerefmid: 'O' | 'M' | 'I';
-  sizerefedg2: 'O' | 'M' | 'I';
-  sizerefout2: 'O' | 'M' | 'I';
+  sizerefout1: DimRef;
+  sizerefedg1: DimRef;
+  sizerefmid: DimRef;
+  sizerefedg2: DimRef;
+  sizerefout2: DimRef;
 };
 
 export class Calculator {
   public calculateSections(
-    ast: Sections,
+    ast: Sections | Section,
     availableLength: number,
     dividerThickness: number = 0,
-    dimRef?: DimRefProps
+    dimRef?: Partial<DimRefProps>
   ): number[] | EvaluationErrors {
-    if (!(ast.type === 'Sections' || ast.type === 'Section')) {
-      return new EvaluationErrors(
-        'Evaluation result is not a valid section structure.'
-      );
+    let sections: Section[];
+    if (ast.type === 'Sections') {
+      sections = ast.sections;
+    } else if (ast.type === 'Section') {
+      sections = [ast];
+    } else {
+      return new EvaluationErrors('Evaluation result is not a valid section structure.');
     }
-
-    const sections = Array.isArray((ast as Sections).sections)
-      ? (ast as Sections).sections
-      : [ast as Section];
       
     if (sections.length === 0) {
         return [];
     }
 
-    let absoluteLengthSum = 0;
+  const defaultRefs: DimRefProps = {
+        sizerefedg1: 'M',
+        sizerefmid: 'M',
+        sizerefedg2: 'M',
+        sizerefout1: 'O',
+        sizerefout2: 'O',
+     };
+     const refs = { ...defaultRefs, ...dimRef };
+
+    let absoluteClearOpeningSum = 0;
     let relativeRatioSum = 0;
-    const relativeSections: Section[] = [];
-    const absoluteSections: Map<number, number> = new Map();
+    const isAbsolute = sections.map(s => s.nodes.type === 'NumberLiteral' && s.nodes.hasMillimeterSuffix);
 
-    // 1. First pass: Separate absolute and relative zones
+    // 1. First Pass: Get sums of absolute clear openings and relative ratios
     for (let i = 0; i < sections.length; i++) {
-      const section = sections[i];
-      const node = section.nodes;
-
-      if (node.type === 'NumberLiteral' && node.hasMillimeterSuffix) {
-        // This is an absolute length zone, like <100mm>
-        const value = (node as NumberLiteral).value;
-        absoluteLengthSum += value;
-        absoluteSections.set(i, value);
-      } else if (node.type === 'NumberLiteral' && !node.hasMillimeterSuffix) {
-        // This is a relative ratio zone, like <1> or <2.5>
-        const value = (node as NumberLiteral).value;
-        if (value <= 0) {
+      const node = sections[i].nodes as NumberLiteral;
+      if (isAbsolute[i]) {
+        absoluteClearOpeningSum += node.value;
+      } else {
+        if (node.value <= 0) {
           return new EvaluationErrors('Relative ratio must be greater than zero.');
         }
-        relativeRatioSum += value;
-        relativeSections.push(section);
-      } else {
-        // Handle other simple expressions that resolve to a number for ratios
-        // For now, we assume simple NumberLiterals as per common usage
-         return new EvaluationErrors(`Unsupported section content type: ${node.type}. Sections must be a number or a number with 'mm'.`);
+        relativeRatioSum += node.value;
       }
     }
 
-    // 2. Calculate the total thickness of all internal dividers
+    // 2. Calculate the total space consumed by dividers
     const numberOfDividers = sections.length > 1 ? sections.length - 1 : 0;
     const totalDividerThickness = numberOfDividers * dividerThickness;
 
-    // 3. *** THE CORE FIX IS HERE ***
-    // Calculate the remaining space for relative zones by SUBTRACTING
-    // the sum of absolute zones AND the total thickness of all dividers.
-    const remainingLengthForRelatives =
-      availableLength - absoluteLengthSum - totalDividerThickness;
-
-    if (remainingLengthForRelatives < 0) {
-      return new EvaluationErrors(
-        `The sum of absolute lengths and divider thicknesses (${absoluteLengthSum}mm + ${totalDividerThickness}mm) exceeds the available space of ${availableLength.toFixed(2)}mm.`
-      );
-    }
+    // 3. Calculate the total pool of clear opening space available for relative zones
+    const totalClearSpace = availableLength - totalDividerThickness;
+    const remainingClearSpaceForRelatives = totalClearSpace - absoluteClearOpeningSum;
     
-    // 4. Calculate the size of a single ratio unit
+    if (remainingClearSpaceForRelatives < -0.01) {
+      return new EvaluationErrors(`The sum of absolute clear openings (${absoluteClearOpeningSum}mm) and dividers (${totalDividerThickness}mm) exceeds available space of ${availableLength.toFixed(2)}mm.`);
+    }
+
+    // 4. Determine the value of a single ratio unit in mm of clear opening
     let lengthPerRatioUnit = 0;
     if (relativeRatioSum > 0) {
-      if (remainingLengthForRelatives > 0) {
-        lengthPerRatioUnit = remainingLengthForRelatives / relativeRatioSum;
-      }
-    } else if (remainingLengthForRelatives > 0.01) { // Check for leftover space
-        return new EvaluationErrors(`There is ${remainingLengthForRelatives.toFixed(2)}mm of space left over, but no relative zones to distribute it to.`);
+      lengthPerRatioUnit = Math.max(0, remainingClearSpaceForRelatives) / relativeRatioSum;
+    } else if (remainingClearSpaceForRelatives > 0.01) {
+      return new EvaluationErrors(`There is ${remainingClearSpaceForRelatives.toFixed(2)}mm of space left over, but no relative zones to distribute it to.`);
     }
 
-
-    // 5. Second pass: Build the final array of zone lengths
+    // 5. Final Pass: Build the final zone sizes
     const finalZones: number[] = [];
     for (let i = 0; i < sections.length; i++) {
-        if (absoluteSections.has(i)) {
-            // It's an absolute section, use its stored value
-            finalZones.push(absoluteSections.get(i)!);
-        } else {
-            // It's a relative section, calculate its size
-            const node = sections[i].nodes as NumberLiteral;
-            finalZones.push(node.value * lengthPerRatioUnit);
+      const node = sections[i].nodes as NumberLiteral;
+      let zoneClearOpening = isAbsolute[i] ? node.value : node.value * lengthPerRatioUnit;
+      
+      let adjustedZoneSize = zoneClearOpening;
+
+      // Helper to get the DimRef for a specific divider index
+      const getDividerRef = (index: number): DimRef => {
+        if (index === 0) return refs.sizerefedg1;
+        if (index === numberOfDividers - 1) return refs.sizerefedg2;
+        return refs.sizerefmid;
+      };
+
+      // Add contribution from the left divider (if it exists and is 'M')
+      if (i > 0) {
+        if (getDividerRef(i - 1) === 'M') {
+          adjustedZoneSize += dividerThickness / 2;
         }
-    }
+      }
 
-    // Sanity check
-    const finalSum = finalZones.reduce((sum, val) => sum + val, 0) + totalDividerThickness;
-    if (Math.abs(finalSum - availableLength) > 0.01) { // Allow for small floating point inaccuracies
-       console.warn(`Calculator sanity check failed: Final sum (${finalSum.toFixed(2)}) does not match available length (${availableLength.toFixed(2)}).`);
+      // Add contribution from the right divider (if it exists and is 'M')
+      if (i < sections.length - 1) {
+        if (getDividerRef(i) === 'M') {
+          adjustedZoneSize += dividerThickness / 2;
+        }
+      }
+      
+      finalZones.push(adjustedZoneSize);
     }
-
+    
     return finalZones;
   }
 }
