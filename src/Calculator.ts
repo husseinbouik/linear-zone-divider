@@ -1,5 +1,3 @@
-// in linear-zone-divider/src/Calculator.ts
-
 import {
   Section,
   Sections,
@@ -7,6 +5,7 @@ import {
   EvaluationErrors,
 } from './types';
 
+// These types are used internally but not exported as part of the public API
 type DimRef = 'O' | 'M' | 'I';
 
 type DimRefProps = {
@@ -22,6 +21,9 @@ export class Calculator {
     ast: Sections | Section,
     availableLength: number,
     dividerThickness: number = 0,
+    // dimRef is passed but its properties (sizerefedg1, etc.) are positional
+    // and do not affect the calculated size of the clear openings.
+    // They are kept for API compatibility but are not used in this function.
     dimRef?: Partial<DimRefProps>
   ): number[] | EvaluationErrors {
     let sections: Section[];
@@ -37,14 +39,9 @@ export class Calculator {
         return [];
     }
 
-  const defaultRefs: DimRefProps = {
-        sizerefedg1: 'M',
-        sizerefmid: 'M',
-        sizerefedg2: 'M',
-        sizerefout1: 'O',
-        sizerefout2: 'O',
-     };
-     const refs = { ...defaultRefs, ...dimRef };
+    // No need for defaultRefs as divider refs don't affect size calculation.
+    // const defaultRefs: DimRefProps = { ... };
+    // const refs = { ...defaultRefs, ...dimRef };
 
     let absoluteClearOpeningSum = 0;
     let relativeRatioSum = 0;
@@ -67,7 +64,7 @@ export class Calculator {
     const numberOfDividers = sections.length > 1 ? sections.length - 1 : 0;
     const totalDividerThickness = numberOfDividers * dividerThickness;
 
-    // 3. Calculate the total pool of clear opening space available for relative zones
+    // 3. Calculate the total pool of clear opening space available for all zones
     const totalClearSpace = availableLength - totalDividerThickness;
     const remainingClearSpaceForRelatives = totalClearSpace - absoluteClearOpeningSum;
     
@@ -79,40 +76,26 @@ export class Calculator {
     let lengthPerRatioUnit = 0;
     if (relativeRatioSum > 0) {
       lengthPerRatioUnit = Math.max(0, remainingClearSpaceForRelatives) / relativeRatioSum;
-    } else if (remainingClearSpaceForRelatives > 0.01) {
-      return new EvaluationErrors(`There is ${remainingClearSpaceForRelatives.toFixed(2)}mm of space left over, but no relative zones to distribute it to.`);
+    } else if (Math.abs(remainingClearSpaceForRelatives) > 0.01) {
+      const verb = remainingClearSpaceForRelatives > 0 ? "left over" : "short";
+      return new EvaluationErrors(`There is ${Math.abs(remainingClearSpaceForRelatives).toFixed(2)}mm of space ${verb}, but no relative zones to distribute it to.`);
     }
 
-    // 5. Final Pass: Build the final zone sizes
+    // 5. Final Pass: Build the final zone sizes (which are the clear openings)
     const finalZones: number[] = [];
     for (let i = 0; i < sections.length; i++) {
       const node = sections[i].nodes as NumberLiteral;
-      let zoneClearOpening = isAbsolute[i] ? node.value : node.value * lengthPerRatioUnit;
       
-      let adjustedZoneSize = zoneClearOpening;
-
-      // Helper to get the DimRef for a specific divider index
-      const getDividerRef = (index: number): DimRef => {
-        if (index === 0) return refs.sizerefedg1;
-        if (index === numberOfDividers - 1) return refs.sizerefedg2;
-        return refs.sizerefmid;
-      };
-
-      // Add contribution from the left divider (if it exists and is 'M')
-      if (i > 0) {
-        if (getDividerRef(i - 1) === 'M') {
-          adjustedZoneSize += dividerThickness / 2;
-        }
-      }
-
-      // Add contribution from the right divider (if it exists and is 'M')
-      if (i < sections.length - 1) {
-        if (getDividerRef(i) === 'M') {
-          adjustedZoneSize += dividerThickness / 2;
-        }
-      }
+      // The size of the zone component IS the calculated clear opening.
+      // The space for the divider has already been accounted for.
+      const zoneClearOpening = isAbsolute[i] ? node.value : node.value * lengthPerRatioUnit;
       
-      finalZones.push(adjustedZoneSize);
+      // --- NO ADJUSTMENT NEEDED ---
+      // The properties like sizerefedg1, sizerefmid determine the *position*
+      // of the divider, which is handled by the rendering logic, not the sizing logic.
+      // Adding back half the thickness here was the error.
+      
+      finalZones.push(zoneClearOpening);
     }
     
     return finalZones;
