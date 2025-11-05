@@ -1,5 +1,3 @@
-// in linear-zone-divider/index.ts
-
 import { Scanner } from "./Scanner";
 import { Parser } from "./Parser";
 import { Evaluator } from "./Evaluator";
@@ -72,26 +70,46 @@ export const processLindiv = (
 
 /**
  * Calculates how much a side panel encroaches into the available division space.
- * @param sideConfig The configuration of the side panel.
- * @returns The length adjustment value.
+ * This is used to calculate the NET length for the internal calculator.
  */
 const getSideAdjustment = (sideConfig: SideConfig | undefined): number => {
     if (!sideConfig || !sideConfig.thickness) {
         return 0;
     }
-    // Default to 'I' if dimRef is not provided
     const dimRef = sideConfig.dimRef || DimRef.I;
 
     switch (dimRef) {
-        case DimRef.O: // Panel is "outside" the boundary, taking up internal space
+        case DimRef.O:
             return sideConfig.thickness;
-        case DimRef.M: // Panel is centered on the boundary
+        case DimRef.M:
             return sideConfig.thickness / 2;
-        case DimRef.I: // Panel is "inside" the boundary, not affecting division space
+        case DimRef.I:
         default:
             return 0;
     }
 };
+
+/**
+ * After zones are calculated based on netLength, this function determines
+ * how much size to ADD to the outer zones based on their side panel's DimRef.
+ */
+const getOuterZoneAdjustment = (sideConfig: SideConfig | undefined): number => {
+    if (!sideConfig || !sideConfig.thickness) {
+        return 0;
+    }
+    const dimRef = sideConfig.dimRef || DimRef.I;
+    
+    switch(dimRef) {
+        case DimRef.I:
+            return sideConfig.thickness;
+        case DimRef.M:
+            return sideConfig.thickness / 2;
+        case DimRef.O:
+        default:
+            return 0;
+    }
+}
+
 
 /**
  * Calculates the net length available for division after accounting for side panels.
@@ -106,7 +124,6 @@ function calculateNetLength(
         return totalLength;
     }
 
-    // Determine which sides are relevant based on division direction and type
     const side1Config = direction === 'h'
         ? sideThickness.top
         : (divisionType === 'D' ? sideThickness.front : sideThickness.left);
@@ -119,7 +136,6 @@ function calculateNetLength(
     const adjustment2 = getSideAdjustment(side2Config);
 
     const netLength = totalLength - adjustment1 - adjustment2;
-
     return Math.max(netLength, 0);
 }
 
@@ -144,63 +160,81 @@ export const processLindivEnhanced = (
       return evaluationResult;
     }
 
-    // --- NEW LOGIC BLOCK STARTS HERE ---
-    // Create a deep copy of sideThickness to avoid mutating the original config object.
-    const augmentedSideThickness = JSON.parse(JSON.stringify(sideThickness || {}));
+    const augmentedSideThickness: SideThicknessConfig = JSON.parse(JSON.stringify(sideThickness || {}));
 
-    // If dividerDimRef is provided, use it to override the dimRef of the corresponding side panels.
-    if (dividerDimRef) {
-        let startSideKey: keyof SideThicknessConfig | undefined;
-        let endSideKey: keyof SideThicknessConfig | undefined;
+    let startSideKey: keyof SideThicknessConfig | undefined;
+    let endSideKey: keyof SideThicknessConfig | undefined;
 
-        if (direction === 'h') {
-            startSideKey = 'top';
-            endSideKey = 'bottom';
-        } else { // Vertical division
-            if (divisionType === 'D') {
-                startSideKey = 'front';
-                endSideKey = 'back';
-            } else { // Default to Width division ('W', 'P')
-                startSideKey = 'left';
-                endSideKey = 'right';
-            }
-        }
-
-        // Apply sizerefout1 to the start side's dimRef if it exists
-        if (startSideKey && augmentedSideThickness[startSideKey] && dividerDimRef.sizerefout1) {
-            augmentedSideThickness[startSideKey].dimRef = dividerDimRef.sizerefout1;
-        }
-
-        // Apply sizerefout2 to the end side's dimRef if it exists
-        if (endSideKey && augmentedSideThickness[endSideKey] && dividerDimRef.sizerefout2) {
-            augmentedSideThickness[endSideKey].dimRef = dividerDimRef.sizerefout2;
+    if (direction === 'h') {
+        startSideKey = 'top';
+        endSideKey = 'bottom';
+    } else {
+        if (divisionType === 'D') {
+            startSideKey = 'front';
+            endSideKey = 'back';
+        } else {
+            startSideKey = 'left';
+            endSideKey = 'right';
         }
     }
-    // --- NEW LOGIC BLOCK ENDS HERE ---
 
+    // --- FIX START: Robustly apply DimRef from UI ---
+    if (dividerDimRef) {
+        if (startSideKey) {
+            // Ensure the object exists before assigning to it.
+            if (!augmentedSideThickness[startSideKey]) {
+                augmentedSideThickness[startSideKey] = {};
+            }
+            augmentedSideThickness[startSideKey]!.dimRef = dividerDimRef.sizerefout1;
+        }
 
-    // 1. Calculate the TRUE net length using the potentially modified sideThickness.
+        if (endSideKey) {
+            // Ensure the object exists before assigning to it.
+            if (!augmentedSideThickness[endSideKey]) {
+                augmentedSideThickness[endSideKey] = {};
+            }
+            augmentedSideThickness[endSideKey]!.dimRef = dividerDimRef.sizerefout2;
+        }
+    }
+    // --- FIX END ---
+
     const netLength = calculateNetLength(
       config.totalLength,
-      augmentedSideThickness, // Use the augmented object
+      augmentedSideThickness,
       direction,
       divisionType
     );
 
-    // 2. The calculator now works with the correct, constrained space.
     const calculator = new Calculator();
     const internalSections = calculator.calculateSections(
       evaluationResult as Sections,
-      netLength, // Use the correct net length
+      netLength,
       config.dividerThickness,
       config.dividerDimRef
     );
 
     if (internalSections instanceof EvaluationErrors) {
-      throw new Error(internalSections.message);
+      return internalSections;
     }
     
-    // 3. Return the result directly.
+    // --- RESTORED LOGIC ---
+    // Adjust outer zones to account for side panels that are 'Inside' or 'Middle'.
+    if (internalSections.length > 0) {
+        const startSideConfig = startSideKey ? augmentedSideThickness[startSideKey] : undefined;
+        const endSideConfig = endSideKey ? augmentedSideThickness[endSideKey] : undefined;
+
+        const startAdjustment = getOuterZoneAdjustment(startSideConfig);
+        const endAdjustment = getOuterZoneAdjustment(endSideConfig);
+
+        internalSections[0] += startAdjustment;
+        
+        if (internalSections.length > 1) {
+            internalSections[internalSections.length - 1] += endAdjustment;
+        } else {
+            internalSections[0] += endAdjustment;
+        }
+    }
+    
     return internalSections;
 
   } catch (err) {
